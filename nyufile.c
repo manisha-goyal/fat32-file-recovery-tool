@@ -2,8 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <stdint.h>
 
 void print_usage();
+void print_file_system_info(const char *diskImage);
 
 int main(int argc, char *argv[]) {
     int opt;
@@ -11,7 +14,7 @@ int main(int argc, char *argv[]) {
     char *sha1 = NULL;
     int r_flag = 0, R_flag = 0, i_flag = 0, l_flag = 0, s_flag = 0;
 
-    while ((opt = getopt(argc, argv, "ilr:Rs:")) != -1) {
+    while ((opt = getopt(argc, argv, "ilr:R:s:")) != -1) {
         switch (opt) {
             case 'i':
                 i_flag = 1;
@@ -37,6 +40,13 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (optind >= argc) {
+        print_usage();
+        return 1;
+    }
+
+    char *diskImage = argv[optind];
+
     if ((i_flag && argc != 3) || (l_flag && argc != 3) || (r_flag && R_flag) ||
         (r_flag && !filename ) || (R_flag && (!filename || !s_flag || !sha1))) {
         print_usage();
@@ -52,6 +62,9 @@ int main(int argc, char *argv[]) {
         if (argc != 3) {
             print_usage();
             return 1;
+        }
+        if(i_flag) {
+            print_file_system_info(diskImage);
         }
     } else if (r_flag) {
         if ((filename == NULL || strlen(filename) == 0) || (s_flag && (sha1 == NULL || strlen(sha1) == 0))) {
@@ -69,6 +82,11 @@ int main(int argc, char *argv[]) {
     }
 
     return 0;
+}
+
+void print_file_system_info(const char *diskImage) {
+    //add code here
+    printf(diskImage);
 }
 
 void print_usage() {
