@@ -1,1 +1,5 @@
 nyufile-autograder
+.DS_Store
+fat32.disk
+nyufile
+nyufile.o
