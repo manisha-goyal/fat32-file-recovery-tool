@@ -55,6 +55,12 @@ typedef struct DirEntry {
 } DirEntry;
 #pragma pack(pop)
 
+typedef struct DiskImage {
+    char *filename;
+    void *map;
+    size_t size;
+} DiskImage;
+
 #define ATTR_DIRECTORY 0x10
 #define ATTR_LONG_NAME 0x0f
 #define DELETED_FILE 0xe5
@@ -62,10 +68,13 @@ typedef struct DirEntry {
 #define END_OF_DIRECTORY 0x00
 #define END_OF_CLUSTER 0x0ffffff8
 
+void initDiskImage(DiskImage *diskImage, char *filename);
+void mapDiskImage(DiskImage *diskImage);
+void unmapDiskImage(DiskImage *diskImage);
 void printUsage();
 void printFileSystemInfo(BootEntry *bootEntry);
 void listRootDirectory(BootEntry *bootEntry, char *diskMap);
-char *formatDirEntryName(const unsigned char *dirName);
+char *formatDirEntryName(unsigned char *dirName);
 
 int main(int argc, char *argv[]) {
     int opt;
@@ -122,9 +131,37 @@ int main(int argc, char *argv[]) {
         printUsage();
     }
 
-    char *diskImage = argv[optind];
+    char *diskImageName = argv[optind];
+    DiskImage diskImage;
+    initDiskImage(&diskImage, diskImageName);
+    mapDiskImage(&diskImage);
+
+    BootEntry *bootEntry = (BootEntry *)diskImage.map;
+    if (!bootEntry) {
+        fprintf(stderr, "Failed to initialize disk image\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if(iFlag) {
+        printFileSystemInfo(bootEntry);
+    }
+    if (lFlag) {
+        listRootDirectory(bootEntry, diskImage.map);
+    } 
     
-    int fd = open(diskImage, O_RDWR);
+    unmapDiskImage(&diskImage);
+
+    return 0;
+}
+
+void initDiskImage(DiskImage *diskImage, char *filename) {
+    diskImage->filename = filename;
+    diskImage->map = MAP_FAILED;
+    diskImage->size = 0;
+}
+
+void mapDiskImage(DiskImage *diskImage) {
+    int fd = open(diskImage->filename, O_RDWR);
     if (fd == -1) {
         fprintf(stderr, "Error opening disk image");
         exit(EXIT_FAILURE);
@@ -137,33 +174,23 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    char *diskMap = mmap(NULL, sb.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    diskImage->size = sb.st_size;
+
+    unmapDiskImage(diskImage);
+    diskImage->map = mmap(NULL, diskImage->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
-    
-    if (diskMap == MAP_FAILED) {
+
+    if (diskImage->map == MAP_FAILED) {
         fprintf(stderr, "Error mapping disk image");
         exit(EXIT_FAILURE);
     }
+}
 
-    BootEntry *bootEntry = (BootEntry *)diskMap;
-    if (!bootEntry) {
-        fprintf(stderr, "Failed to initialize disk image\n");
-        exit(EXIT_FAILURE);
+void unmapDiskImage(DiskImage *diskImage) {
+    if (diskImage->map != MAP_FAILED) {
+        munmap(diskImage->map, diskImage->size);
+        diskImage->map = MAP_FAILED;
     }
-
-    if(iFlag) {
-        printFileSystemInfo(bootEntry);
-    }
-
-    if (lFlag) {
-        listRootDirectory(bootEntry, diskMap);
-    } 
-
-    if (diskMap) {
-        munmap(diskMap, sb.st_size);
-    }
-
-    return 0;
 }
 
 void printUsage() {
@@ -234,7 +261,7 @@ void listRootDirectory(BootEntry *bootEntry, char *diskMap) {
     printf("Total number of entries = %d\n", totalEntries);
 }
 
-char *formatDirEntryName(const unsigned char* dirName) {
+char *formatDirEntryName(unsigned char* dirName) {
     char* formattedName = malloc(13 * sizeof(char));
     int len = 0, pos = 0;
 
