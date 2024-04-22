@@ -58,6 +58,8 @@ typedef struct DirEntry {
 #define ATTR_DIRECTORY 0x10
 #define ATTR_LONG_NAME 0x0f
 #define DELETED_FILE 0xe5
+#define HIDDEN_FILE 0x02
+#define EMPTY_DIRECTORY 0x00
 #define END_OF_DIRECTORY 0x00
 #define END_OF_CLUSTER 0x0ffffff8
 
@@ -182,35 +184,37 @@ void printFileSystemInfo(BootEntry *bootEntry) {
 }
 
 void listRootDirectory(BootEntry *bootEntry, char *diskMap) {
-    int rootCluster = bootEntry->BPB_RootClus;
-    int clusterSize = bootEntry->BPB_SecPerClus * bootEntry->BPB_BytsPerSec;
-    int reservedSecOffset = bootEntry->BPB_RsvdSecCnt * bootEntry->BPB_BytsPerSec;
-    int fatOffset = (bootEntry->BPB_NumFATs * bootEntry->BPB_FATSz32) * bootEntry->BPB_BytsPerSec;
-    int *FAT = (int *)(diskMap + reservedSecOffset);
+    unsigned int rootCluster = bootEntry->BPB_RootClus;
+    unsigned int clusterSize = bootEntry->BPB_SecPerClus * bootEntry->BPB_BytsPerSec;
+    unsigned int reservedSecOffset = bootEntry->BPB_RsvdSecCnt * bootEntry->BPB_BytsPerSec;
+    unsigned int fatOffset = (bootEntry->BPB_NumFATs * bootEntry->BPB_FATSz32) * bootEntry->BPB_BytsPerSec;
+    unsigned int *FAT = (unsigned int *)(diskMap + reservedSecOffset);
     int entriesPerCluster = (int)(clusterSize/sizeof(DirEntry));
 
     int totalEntries = 0;
 
     while (rootCluster < END_OF_CLUSTER) {
-        int clusterOffset = ((rootCluster - 2) * clusterSize) + reservedSecOffset + fatOffset;
+        unsigned int clusterOffset = ((rootCluster - 2) * clusterSize) + reservedSecOffset + fatOffset;
         DirEntry *entry = (DirEntry *)(diskMap + clusterOffset);
         int entryCount = 0;
 
-        while(entryCount < entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY) {
-            if (entry->DIR_Name[0] == DELETED_FILE || entry->DIR_Attr == ATTR_LONG_NAME) {
+        while(entryCount < entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY) {
+            if (entry->DIR_Name[0] == DELETED_FILE || entry->DIR_Attr == ATTR_LONG_NAME || entry->DIR_Attr == HIDDEN_FILE) {
                 entry++;
                 continue;
             }
 
             char *formattedName = formatDirEntryName(entry->DIR_Name);
-            int startingCluster = ((unsigned int)entry->DIR_FstClusHI << 16) | entry->DIR_FstClusLO;
+            unsigned int startingCluster = ((unsigned int)entry->DIR_FstClusHI << 16) | entry->DIR_FstClusLO;
 
             if (entry->DIR_Attr == ATTR_DIRECTORY) {
                 printf("%s/ (starting cluster = %u)\n", formattedName, startingCluster);
-            } else if (entry->DIR_FileSize != 0){ 
-                printf("%s (size = %u, starting cluster = %u)\n", formattedName, entry->DIR_FileSize, startingCluster);
             } else {
-                printf("%s (size = %u)\n", formattedName, entry->DIR_FileSize);
+                if (entry->DIR_FileSize != 0){ 
+                    printf("%s (size = %u, starting cluster = %u)\n", formattedName, entry->DIR_FileSize, startingCluster);
+                } else {
+                    printf("%s (size = %u)\n", formattedName, entry->DIR_FileSize);
+                }
             }
 
             if (formattedName != NULL) {
@@ -230,10 +234,10 @@ void listRootDirectory(BootEntry *bootEntry, char *diskMap) {
 
 char *formatDirEntryName(const unsigned char* dirName) {
     char* formattedName = malloc(13 * sizeof(char));
-    int nameLen = 0, pos = 0;
+    int len = 0, pos = 0;
 
     while (pos < 8 && dirName[pos] != ' ') {
-        formattedName[nameLen++] = dirName[pos++];
+        formattedName[len++] = dirName[pos++];
     }
 
     int hasExtension = 0;
@@ -246,14 +250,14 @@ char *formatDirEntryName(const unsigned char* dirName) {
     }
 
     if (hasExtension) {
-        formattedName[nameLen++] = '.';
+        formattedName[len++] = '.';
         pos = 8;
         while (pos < 11 && dirName[pos] != ' ') {
-            formattedName[nameLen++] = dirName[pos++];
+            formattedName[len++] = dirName[pos++];
         }
     }
 
-    formattedName[nameLen] = '\0';
+    formattedName[len] = '\0';
     return formattedName;
 }
 
