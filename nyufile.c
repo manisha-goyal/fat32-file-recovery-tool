@@ -57,8 +57,9 @@ typedef struct DirEntry {
 
 typedef struct DiskImage {
     char *filename;
-    void *map;
+    char *map;
     size_t size;
+    BootEntry *bootEntry;
 } DiskImage;
 
 #define ATTR_DIRECTORY 0x10
@@ -68,13 +69,13 @@ typedef struct DiskImage {
 #define END_OF_DIRECTORY 0x00
 #define END_OF_CLUSTER 0x0ffffff8
 
-void handle_error(const char* message, int exitCode);
+void handleError(char* message, int exitCode);
 void initDiskImage(DiskImage *diskImage, char *filename);
 void mapDiskImage(DiskImage *diskImage);
 void unmapDiskImage(DiskImage *diskImage);
 void printUsage();
-void printFileSystemInfo(BootEntry *bootEntry);
-void listRootDirectory(BootEntry *bootEntry, char *diskMap);
+void printFileSystemInfo(DiskImage *diskImage);
+void listRootDirectory(DiskImage *diskImage);
 char *formatDirEntryName(unsigned char *dirName);
 
 int main(int argc, char *argv[]) {
@@ -137,24 +138,19 @@ int main(int argc, char *argv[]) {
     initDiskImage(&diskImage, diskImageName);
     mapDiskImage(&diskImage);
 
-    BootEntry *bootEntry = (BootEntry *)diskImage.map;
-    if (!bootEntry) {
-        handle_error("Failed to initialize disk image", EXIT_FAILURE);
-    }
-
     if(iFlag) {
-        printFileSystemInfo(bootEntry);
+        printFileSystemInfo(&diskImage);
     }
     if (lFlag) {
-        listRootDirectory(bootEntry, diskImage.map);
-    } 
+        listRootDirectory(&diskImage);
+    }
     
     unmapDiskImage(&diskImage);
 
     return 0;
 }
 
-void handle_error(const char* message, int exitCode) {
+void handleError(char* message, int exitCode) {
     fprintf(stderr, "%s\n", message);
     if (exitCode != 0) {
         exit(exitCode);
@@ -170,13 +166,13 @@ void initDiskImage(DiskImage *diskImage, char *filename) {
 void mapDiskImage(DiskImage *diskImage) {
     int fd = open(diskImage->filename, O_RDWR);
     if (fd == -1) {
-        handle_error("Error opening disk image", EXIT_FAILURE);
+        handleError("Error opening disk image", EXIT_FAILURE);
     }
 
     struct stat sb;
     if (fstat(fd, &sb) == -1) {
         close(fd);
-        handle_error("Error determining file size", EXIT_FAILURE);
+        handleError("Error determining file size", EXIT_FAILURE);
     }
 
     diskImage->size = sb.st_size;
@@ -186,7 +182,12 @@ void mapDiskImage(DiskImage *diskImage) {
     close(fd);
 
     if (diskImage->map == MAP_FAILED) {
-        handle_error("Error mapping disk image", EXIT_FAILURE);
+        handleError("Error mapping disk image", EXIT_FAILURE);
+    }
+
+    diskImage->bootEntry = (BootEntry *)diskImage->map;
+    if (!diskImage->bootEntry) {
+        handleError("Failed to initialize disk image", EXIT_FAILURE);
     }
 }
 
@@ -206,14 +207,17 @@ void printUsage() {
     exit(EXIT_SUCCESS);
 }
 
-void printFileSystemInfo(BootEntry *bootEntry) {
+void printFileSystemInfo(DiskImage *diskImage) {
+    BootEntry *bootEntry = diskImage->bootEntry;
     printf("Number of FATs = %d\n", bootEntry->BPB_NumFATs);
     printf("Number of bytes per sector = %d\n", bootEntry->BPB_BytsPerSec);
     printf("Number of sectors per cluster = %d\n", bootEntry->BPB_SecPerClus);
     printf("Number of reserved sectors = %d\n", bootEntry->BPB_RsvdSecCnt);
 }
 
-void listRootDirectory(BootEntry *bootEntry, char *diskMap) {
+void listRootDirectory(DiskImage *diskImage) {
+    BootEntry *bootEntry = diskImage->bootEntry;
+    char *diskMap = diskImage->map;
     unsigned int rootCluster = bootEntry->BPB_RootClus;
     unsigned int clusterSize = bootEntry->BPB_SecPerClus * bootEntry->BPB_BytsPerSec;
     unsigned int reservedSecOffset = bootEntry->BPB_RsvdSecCnt * bootEntry->BPB_BytsPerSec;
