@@ -197,10 +197,12 @@ void listRootDirectory(BootEntry *bootEntry, char *diskMap) {
         unsigned int clusterOffset = ((rootCluster - 2) * clusterSize) + reservedSecOffset + fatOffset;
         DirEntry *entry = (DirEntry *)(diskMap + clusterOffset);
         int entryCount = 0;
+        int validEntryCount = 0;
 
         while(entryCount < entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY) {
             if (entry->DIR_Name[0] == DELETED_FILE || entry->DIR_Attr == ATTR_LONG_NAME || entry->DIR_Attr == HIDDEN_FILE) {
                 entry++;
+                entryCount++;
                 continue;
             }
 
@@ -223,9 +225,10 @@ void listRootDirectory(BootEntry *bootEntry, char *diskMap) {
 
             entry++;
             entryCount++;
+            validEntryCount++;
         }
 
-        totalEntries+=entryCount;
+        totalEntries+=validEntryCount;
         rootCluster = FAT[rootCluster];
     }
     
