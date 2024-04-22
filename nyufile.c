@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <stdbool.h>
 
 #pragma pack(push,1)
 typedef struct BootEntry {
@@ -76,7 +77,9 @@ void unmapDiskImage(DiskImage *diskImage);
 void printUsage();
 void printFileSystemInfo(DiskImage *diskImage);
 void listRootDirectory(DiskImage *diskImage);
-char *formatDirEntryName(unsigned char *dirName);
+char *formatDirEntryName(unsigned char *dirName, bool overrideFirstChar, char firstChar);
+void recoverFile(DiskImage *diskImage, char *filename);
+bool isDeletedFile(unsigned char* entryName, char* filename);
 
 int main(int argc, char *argv[]) {
     int opt;
@@ -122,11 +125,11 @@ int main(int argc, char *argv[]) {
             printUsage();
         }
     } else if (rFlag) {
-        if ((filename == NULL || strlen(filename) == 0) || (sFlag && (sha1 == NULL || strlen(sha1) == 0))) {
+        if ((filename == NULL || strlen(filename) < 1) || (sFlag && (sha1 == NULL || strlen(sha1) == 0))) {
             printUsage();
         }
     } else if (RFlag) {
-        if (filename == NULL || strlen(filename) == 0 || !sFlag || sha1 == NULL || strlen(sha1) == 0) {
+        if (filename == NULL || strlen(filename) < 1 || !sFlag || sha1 == NULL || strlen(sha1) == 0) {
             printUsage();
         }
     } else {
@@ -143,6 +146,11 @@ int main(int argc, char *argv[]) {
     }
     if (lFlag) {
         listRootDirectory(&diskImage);
+    }
+    if(rFlag) {
+        if(!sFlag) {
+            recoverFile(&diskImage, filename);
+        }
     }
     
     unmapDiskImage(&diskImage);
@@ -230,17 +238,14 @@ void listRootDirectory(DiskImage *diskImage) {
     while (rootCluster < END_OF_CLUSTER) {
         unsigned int clusterOffset = ((rootCluster - 2) * clusterSize) + reservedSecOffset + fatOffset;
         DirEntry *entry = (DirEntry *)(diskMap + clusterOffset);
-        int entryCount = 0;
         int validEntryCount = 0;
 
-        while(entryCount < entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY) {
+        for (int i = 0; i < entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY; i++, entry++) {
             if (entry->DIR_Name[0] == DELETED_FILE || entry->DIR_Attr == ATTR_LONG_NAME) {
-                entry++;
-                entryCount++;
                 continue;
             }
 
-            char *formattedName = formatDirEntryName(entry->DIR_Name);
+            char *formattedName = formatDirEntryName(entry->DIR_Name, false, '\0');
             unsigned int startingCluster = ((unsigned int)entry->DIR_FstClusHI << 16) | entry->DIR_FstClusLO;
 
             if (entry->DIR_Attr == ATTR_DIRECTORY) {
@@ -257,8 +262,6 @@ void listRootDirectory(DiskImage *diskImage) {
                 free(formattedName);
             }
 
-            entry++;
-            entryCount++;
             validEntryCount++;
         }
 
@@ -269,33 +272,68 @@ void listRootDirectory(DiskImage *diskImage) {
     printf("Total number of entries = %d\n", totalEntries);
 }
 
-char *formatDirEntryName(unsigned char* dirName) {
+char *formatDirEntryName(unsigned char* dirName, bool overrideFirstChar, char firstChar) {
     char* formattedName = malloc(13 * sizeof(char));
-    int len = 0, pos = 0;
+    int len = 0;
+    formattedName[len++] = overrideFirstChar ? firstChar : dirName[0];
+    int pos = 1;
 
     while (pos < 8 && dirName[pos] != ' ') {
         formattedName[len++] = dirName[pos++];
     }
 
-    int hasExtension = 0;
-    pos = 8;
-    while (pos < 11 && !hasExtension) {
+    bool hasExtension = false;
+    for (pos = 8; pos < 11; pos++) {
         if (dirName[pos] != ' ') {
-            hasExtension = 1;
+            hasExtension = true;
+            break;
         }
-        pos++;
     }
 
     if (hasExtension) {
         formattedName[len++] = '.';
-        pos = 8;
-        while (pos < 11 && dirName[pos] != ' ') {
-            formattedName[len++] = dirName[pos++];
+        for (pos = 8; pos < 11 && dirName[pos] != ' '; pos++) {
+            formattedName[len++] = dirName[pos];
         }
     }
 
     formattedName[len] = '\0';
     return formattedName;
+}
+
+void recoverFile(DiskImage *diskImage, char *filename) {
+    BootEntry *bootEntry = diskImage->bootEntry;
+    unsigned int rootCluster = bootEntry->BPB_RootClus;
+    unsigned int clusterSize = bootEntry->BPB_SecPerClus * bootEntry->BPB_BytsPerSec;
+    unsigned int reservedSecOffset = bootEntry->BPB_RsvdSecCnt * bootEntry->BPB_BytsPerSec;
+    unsigned int fatOffset = (bootEntry->BPB_NumFATs * bootEntry->BPB_FATSz32) * bootEntry->BPB_BytsPerSec;
+    unsigned int *FAT = (unsigned int *)(diskImage->map + reservedSecOffset);
+    int entriesPerCluster = (int)(clusterSize / sizeof(DirEntry));
+    unsigned int clusterOffset = ((rootCluster - 2) * clusterSize) + reservedSecOffset + fatOffset;
+    DirEntry *entry = (DirEntry *)(diskImage->map + clusterOffset);
+
+    for (int i = 0; i < entriesPerCluster; i++, entry++) {
+        if (entry->DIR_Name[0] == DELETED_FILE) {
+            if (isDeletedFile(entry->DIR_Name, filename) == true) {
+                entry->DIR_Name[0] = filename[0];
+                unsigned int startCluster = ((unsigned int)entry->DIR_FstClusHI << 16) | entry->DIR_FstClusLO;
+                FAT[startCluster] = END_OF_CLUSTER;
+                printf("%s: successfully recovered\n", filename);
+                return;
+            }
+        }
+    }
+    printf("%s: file not found\n", filename);
+}
+
+bool isDeletedFile(unsigned char* entryName, char* filename) {
+    char* recoveredName = formatDirEntryName(entryName, true, filename[0]);
+    if (strcmp(recoveredName, filename) == 0) {
+        free(recoveredName);
+        return true;
+    }
+    free(recoveredName);
+    return false;
 }
 
 /* References:
