@@ -68,6 +68,7 @@ typedef struct DiskImage {
 #define END_OF_DIRECTORY 0x00
 #define END_OF_CLUSTER 0x0ffffff8
 
+void handle_error(const char* message, int exitCode);
 void initDiskImage(DiskImage *diskImage, char *filename);
 void mapDiskImage(DiskImage *diskImage);
 void unmapDiskImage(DiskImage *diskImage);
@@ -138,8 +139,7 @@ int main(int argc, char *argv[]) {
 
     BootEntry *bootEntry = (BootEntry *)diskImage.map;
     if (!bootEntry) {
-        fprintf(stderr, "Failed to initialize disk image\n");
-        exit(EXIT_FAILURE);
+        handle_error("Failed to initialize disk image", EXIT_FAILURE);
     }
 
     if(iFlag) {
@@ -154,6 +154,13 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
+void handle_error(const char* message, int exitCode) {
+    fprintf(stderr, "%s\n", message);
+    if (exitCode != 0) {
+        exit(exitCode);
+    }
+}
+
 void initDiskImage(DiskImage *diskImage, char *filename) {
     diskImage->filename = filename;
     diskImage->map = MAP_FAILED;
@@ -163,15 +170,13 @@ void initDiskImage(DiskImage *diskImage, char *filename) {
 void mapDiskImage(DiskImage *diskImage) {
     int fd = open(diskImage->filename, O_RDWR);
     if (fd == -1) {
-        fprintf(stderr, "Error opening disk image");
-        exit(EXIT_FAILURE);
+        handle_error("Error opening disk image", EXIT_FAILURE);
     }
 
     struct stat sb;
     if (fstat(fd, &sb) == -1) {
         close(fd);
-        fprintf(stderr, "Error determining file size");
-        exit(EXIT_FAILURE);
+        handle_error("Error determining file size", EXIT_FAILURE);
     }
 
     diskImage->size = sb.st_size;
@@ -181,8 +186,7 @@ void mapDiskImage(DiskImage *diskImage) {
     close(fd);
 
     if (diskImage->map == MAP_FAILED) {
-        fprintf(stderr, "Error mapping disk image");
-        exit(EXIT_FAILURE);
+        handle_error("Error mapping disk image", EXIT_FAILURE);
     }
 }
 
