@@ -230,10 +230,10 @@ void listRootDirectory(BootEntry *bootEntry, char *diskMap) {
 
 char *formatDirEntryName(const unsigned char* dirName) {
     char* formattedName = malloc(13 * sizeof(char));
-    int nameLen = 0, pos = 0;
+    int len = 0, pos = 0;
 
     while (pos < 8 && dirName[pos] != ' ') {
-        formattedName[nameLen++] = dirName[pos++];
+        formattedName[len++] = dirName[pos++];
     }
 
     int hasExtension = 0;
@@ -246,14 +246,14 @@ char *formatDirEntryName(const unsigned char* dirName) {
     }
 
     if (hasExtension) {
-        formattedName[nameLen++] = '.';
+        formattedName[len++] = '.';
         pos = 8;
         while (pos < 11 && dirName[pos] != ' ') {
-            formattedName[nameLen++] = dirName[pos++];
+            formattedName[len++] = dirName[pos++];
         }
     }
 
-    formattedName[nameLen] = '\0';
+    formattedName[len] = '\0';
     return formattedName;
 }
 
