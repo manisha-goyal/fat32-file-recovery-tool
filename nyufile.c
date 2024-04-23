@@ -89,7 +89,6 @@ void listRootDirectory(DiskImage *diskImage);
 void recoverFile(DiskImage *diskImage, char *filename);
 char *formatDirEntryName(unsigned char *dirName, bool overrideFirstChar, char firstChar);
 bool isMatchingDeletedFile(unsigned char* entryName, char* filename);
-unsigned char *SHA1(const unsigned char *d, size_t n, unsigned char *md);
 
 int main(int argc, char *argv[]) {
     int opt;
