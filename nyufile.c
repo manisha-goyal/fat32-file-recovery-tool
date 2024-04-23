@@ -78,6 +78,8 @@ typedef struct DiskImage {
 #define END_OF_CLUSTER 0x0ffffff8
 #define SHA_DIGEST_LENGTH 20
 
+#define EMPTY_FILE_SHA1 "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+
 void handleError(char* message, int exitCode);
 void initDiskImage(DiskImage *diskImage, char *filename);
 void mapDiskImage(DiskImage *diskImage);
@@ -86,9 +88,11 @@ void unmapDiskImage(DiskImage *diskImage);
 void printUsage();
 void printFileSystemInfo(DiskImage *diskImage);
 void listRootDirectory(DiskImage *diskImage);
-void recoverFile(DiskImage *diskImage, char *filename);
+void recoverFile(DiskImage *diskImage, char *filename, int sFlag, char *sha1);
 char *formatDirEntryName(unsigned char *dirName, bool overrideFirstChar, char firstChar);
 bool isMatchingDeletedFile(unsigned char* entryName, char* filename);
+bool isSHA1Match(DiskImage *diskImage, DirEntry *entry, const char *expectedSHA1);
+unsigned int getStartingCluster(DirEntry *entry);
 
 int main(int argc, char *argv[]) {
     int opt;
@@ -159,9 +163,7 @@ int main(int argc, char *argv[]) {
         listRootDirectory(&diskImage);
     }
     if(rFlag) {
-        if(!sFlag) {
-            recoverFile(&diskImage, filename);
-        }
+        recoverFile(&diskImage, filename, sFlag, sha1);
     }
     
     unmapDiskImage(&diskImage);
@@ -258,7 +260,7 @@ void listRootDirectory(DiskImage *diskImage) {
             }
 
             char *formattedName = formatDirEntryName(entry->DIR_Name, false, '\0');
-            unsigned int startingCluster = ((unsigned int)entry->DIR_FstClusHI << 16) | entry->DIR_FstClusLO;
+            unsigned int startingCluster = getStartingCluster(entry);
 
             if (entry->DIR_Attr == ATTR_DIRECTORY) {
                 printf("%s/ (starting cluster = %u)\n", formattedName, startingCluster);
@@ -281,25 +283,34 @@ void listRootDirectory(DiskImage *diskImage) {
     printf("Total number of entries = %d\n", totalEntries);
 }
 
-void recoverFile(DiskImage *diskImage, char *filename) {
+void recoverFile(DiskImage *diskImage, char *filename, int sFlag, char *sha1) {
     unsigned int rootCluster = diskImage->rootCluster;
 
     int matchingDeletedFileCount = 0;
+    bool hasMatchingSHA1 = false;
     DirEntry *matchingDeletedEntry = NULL;
 
-    while (rootCluster < END_OF_CLUSTER) {
+    while (rootCluster < END_OF_CLUSTER && !hasMatchingSHA1) {
         unsigned int clusterOffset = ((rootCluster - 2) * diskImage->clusterSize) + diskImage->reservedSecOffset + diskImage->fatOffset;
         DirEntry *entry = (DirEntry *)(diskImage->diskMap + clusterOffset);
 
-        for (int i = 0; i < diskImage->entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY; i++, entry++) {
+        for (int i = 0; i < diskImage->entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY && !hasMatchingSHA1; i++, entry++) {
             if (entry->DIR_Attr == ATTR_LONG_NAME || entry->DIR_Attr == ATTR_DIRECTORY){
                 continue;
             }
 
             if (entry->DIR_Name[0] == DELETED_FILE) {
                 if (isMatchingDeletedFile(entry->DIR_Name, filename)) {
-                    matchingDeletedFileCount++;
-                    matchingDeletedEntry = entry;
+                    if(sFlag) {
+                        if (isSHA1Match(diskImage, entry, sha1)) {
+                            hasMatchingSHA1 = true;
+                            matchingDeletedFileCount++;
+                            matchingDeletedEntry = entry;
+                        }
+                    } else {
+                        matchingDeletedFileCount++;
+                        matchingDeletedEntry = entry;
+                    }
                 }
             }
         }
@@ -307,7 +318,7 @@ void recoverFile(DiskImage *diskImage, char *filename) {
     }
 
     if (matchingDeletedFileCount == 1) {
-        unsigned int startingCluster = ((unsigned int)matchingDeletedEntry->DIR_FstClusHI << 16) | matchingDeletedEntry->DIR_FstClusLO;
+        unsigned int startingCluster = getStartingCluster(matchingDeletedEntry);
         int clustersToUpdate = (matchingDeletedEntry->DIR_FileSize + diskImage->clusterSize - 1) / diskImage->clusterSize;
 
         matchingDeletedEntry->DIR_Name[0] = filename[0];
@@ -316,13 +327,20 @@ void recoverFile(DiskImage *diskImage, char *filename) {
             startingCluster++;
         }
         diskImage->FAT[startingCluster] = END_OF_CLUSTER;
-        
-        printf("%s: successfully recovered\n", filename);
+        if(hasMatchingSHA1) {
+            printf("%s: successfully recovered with SHA-1\n", filename);
+        } else {
+            printf("%s: successfully recovered\n", filename);
+        }
     } else if (matchingDeletedFileCount > 1) {
         printf("%s: multiple candidates found\n", filename);
     } else {
         printf("%s: file not found\n", filename);
     }
+}
+
+unsigned int getStartingCluster(DirEntry *entry) {
+    return ((unsigned int)entry->DIR_FstClusHI << 16) | entry->DIR_FstClusLO;
 }
 
 char *formatDirEntryName(unsigned char* dirName, bool overrideFirstChar, char firstChar) {
@@ -366,6 +384,25 @@ bool isMatchingDeletedFile(unsigned char* entryName, char* filename) {
     return false;
 }
 
+bool isSHA1Match(DiskImage *diskImage, DirEntry *entry, const char *expectedSHA1) {
+    if (entry->DIR_FileSize == 0) {
+        return strncmp(EMPTY_FILE_SHA1, expectedSHA1, SHA_DIGEST_LENGTH * 2) == 0;
+    }
+
+    unsigned int startingCluster = getStartingCluster(entry);
+    char *fileData = (char *)(diskImage->diskMap + ((startingCluster - 2) * diskImage->clusterSize) + diskImage->reservedSecOffset + diskImage->fatOffset);
+
+    unsigned char shaDigest[SHA_DIGEST_LENGTH];
+    char calculatedSHA1[SHA_DIGEST_LENGTH * 2 + 1];
+    SHA1((unsigned char *)fileData, entry->DIR_FileSize, shaDigest);
+
+    for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
+        sprintf(calculatedSHA1 + i * 2, "%02x", shaDigest[i]);
+    }
+
+    return strncmp(calculatedSHA1, expectedSHA1, SHA_DIGEST_LENGTH * 2) == 0;
+}
+
 /* References:
 https://people.cs.rutgers.edu/~pxk/416/notes/c-tutorials/getopt.html
 https://www.cs.fsu.edu/~cop4610t/lectures/project3/Week11/Slides_week11.pdf
@@ -373,4 +410,7 @@ https://academy.cba.mit.edu/classes/networking_communications/SD/FAT.pdf
 https://www.rapidtables.com/convert/number/ascii-to-hex.html
 https://people.cs.umass.edu/~liberato/courses/2017-spring-compsci365/lecture-notes/11-fats-and-directory-entries/
 https://averstak.tripod.com/fatdox/dir.htm#atr
+https://www.geeksforgeeks.org/difference-strncmp-strcmp-c-cpp/#:~:text=The%20basic%20difference%20between%20these,strncmp%20behaves%20similar%20to%20strcmp.
+https://stackoverflow.com/questions/9284420/how-to-use-sha1-hashing-in-c-programming
+https://stackoverflow.com/questions/6357031/how-do-you-convert-a-byte-array-to-a-hexadecimal-string-in-c
 */
