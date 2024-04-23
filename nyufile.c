@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <stdbool.h>
+#include <openssl/sha.h>
 
 #pragma pack(push,1)
 typedef struct BootEntry {
@@ -75,6 +76,7 @@ typedef struct DiskImage {
 #define EMPTY_DIRECTORY 0x00
 #define END_OF_DIRECTORY 0x00
 #define END_OF_CLUSTER 0x0ffffff8
+#define SHA_DIGEST_LENGTH 20
 
 void handleError(char* message, int exitCode);
 void initDiskImage(DiskImage *diskImage, char *filename);
@@ -87,6 +89,7 @@ void listRootDirectory(DiskImage *diskImage);
 void recoverFile(DiskImage *diskImage, char *filename);
 char *formatDirEntryName(unsigned char *dirName, bool overrideFirstChar, char firstChar);
 bool isMatchingDeletedFile(unsigned char* entryName, char* filename);
+unsigned char *SHA1(const unsigned char *d, size_t n, unsigned char *md);
 
 int main(int argc, char *argv[]) {
     int opt;
