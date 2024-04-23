@@ -58,9 +58,15 @@ typedef struct DirEntry {
 
 typedef struct DiskImage {
     char *filename;
-    char *map;
+    char *diskMap;
     size_t size;
     BootEntry *bootEntry;
+    unsigned int rootCluster;
+    unsigned int clusterSize;
+    unsigned int reservedSecOffset;
+    unsigned int fatOffset;
+    unsigned int *FAT;
+    int entriesPerCluster;
 } DiskImage;
 
 #define ATTR_DIRECTORY 0x10
@@ -73,13 +79,14 @@ typedef struct DiskImage {
 void handleError(char* message, int exitCode);
 void initDiskImage(DiskImage *diskImage, char *filename);
 void mapDiskImage(DiskImage *diskImage);
+void setupDiskContext(DiskImage *diskImage);
 void unmapDiskImage(DiskImage *diskImage);
 void printUsage();
 void printFileSystemInfo(DiskImage *diskImage);
 void listRootDirectory(DiskImage *diskImage);
 char *formatDirEntryName(unsigned char *dirName, bool overrideFirstChar, char firstChar);
 void recoverFile(DiskImage *diskImage, char *filename);
-bool isDeletedFile(unsigned char* entryName, char* filename);
+bool isMatchingDeletedFile(unsigned char* entryName, char* filename);
 
 int main(int argc, char *argv[]) {
     int opt;
@@ -137,9 +144,11 @@ int main(int argc, char *argv[]) {
     }
 
     char *diskImageName = argv[optind];
+
     DiskImage diskImage;
     initDiskImage(&diskImage, diskImageName);
     mapDiskImage(&diskImage);
+    setupDiskContext(&diskImage);
 
     if(iFlag) {
         printFileSystemInfo(&diskImage);
@@ -167,7 +176,7 @@ void handleError(char* message, int exitCode) {
 
 void initDiskImage(DiskImage *diskImage, char *filename) {
     diskImage->filename = filename;
-    diskImage->map = MAP_FAILED;
+    diskImage->diskMap = MAP_FAILED;
     diskImage->size = 0;
 }
 
@@ -184,25 +193,33 @@ void mapDiskImage(DiskImage *diskImage) {
     }
 
     diskImage->size = sb.st_size;
-
-    unmapDiskImage(diskImage);
-    diskImage->map = mmap(NULL, diskImage->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    diskImage->diskMap = mmap(NULL, diskImage->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
 
-    if (diskImage->map == MAP_FAILED) {
+    if (diskImage->diskMap == MAP_FAILED) {
         handleError("Error mapping disk image", EXIT_FAILURE);
-    }
-
-    diskImage->bootEntry = (BootEntry *)diskImage->map;
-    if (!diskImage->bootEntry) {
-        handleError("Failed to initialize disk image", EXIT_FAILURE);
     }
 }
 
+void setupDiskContext(DiskImage *diskImage) {
+    if (diskImage->diskMap == MAP_FAILED) {
+        fprintf(stderr, "Disk map is not initialized.\n");
+        return;
+    }
+
+    diskImage->bootEntry = (BootEntry *)diskImage->diskMap;
+    diskImage->rootCluster = diskImage->bootEntry->BPB_RootClus;
+    diskImage->clusterSize = diskImage->bootEntry->BPB_SecPerClus * diskImage->bootEntry->BPB_BytsPerSec;
+    diskImage->reservedSecOffset = diskImage->bootEntry->BPB_RsvdSecCnt * diskImage->bootEntry->BPB_BytsPerSec;
+    diskImage->fatOffset = (diskImage->bootEntry->BPB_NumFATs * diskImage->bootEntry->BPB_FATSz32) * diskImage->bootEntry->BPB_BytsPerSec;
+    diskImage->FAT = (unsigned int *)(diskImage->diskMap + diskImage->reservedSecOffset);
+    diskImage->entriesPerCluster = (int)(diskImage->clusterSize / sizeof(DirEntry));
+}
+
 void unmapDiskImage(DiskImage *diskImage) {
-    if (diskImage->map != MAP_FAILED) {
-        munmap(diskImage->map, diskImage->size);
-        diskImage->map = MAP_FAILED;
+    if (diskImage->diskMap != MAP_FAILED) {
+        munmap(diskImage->diskMap, diskImage->size);
+        diskImage->diskMap = MAP_FAILED;
     }
 }
 
@@ -217,6 +234,7 @@ void printUsage() {
 
 void printFileSystemInfo(DiskImage *diskImage) {
     BootEntry *bootEntry = diskImage->bootEntry;
+
     printf("Number of FATs = %d\n", bootEntry->BPB_NumFATs);
     printf("Number of bytes per sector = %d\n", bootEntry->BPB_BytsPerSec);
     printf("Number of sectors per cluster = %d\n", bootEntry->BPB_SecPerClus);
@@ -224,23 +242,15 @@ void printFileSystemInfo(DiskImage *diskImage) {
 }
 
 void listRootDirectory(DiskImage *diskImage) {
-    BootEntry *bootEntry = diskImage->bootEntry;
-    char *diskMap = diskImage->map;
-    unsigned int rootCluster = bootEntry->BPB_RootClus;
-    unsigned int clusterSize = bootEntry->BPB_SecPerClus * bootEntry->BPB_BytsPerSec;
-    unsigned int reservedSecOffset = bootEntry->BPB_RsvdSecCnt * bootEntry->BPB_BytsPerSec;
-    unsigned int fatOffset = (bootEntry->BPB_NumFATs * bootEntry->BPB_FATSz32) * bootEntry->BPB_BytsPerSec;
-    unsigned int *FAT = (unsigned int *)(diskMap + reservedSecOffset);
-    int entriesPerCluster = (int)(clusterSize/sizeof(DirEntry));
-
+    unsigned int rootCluster = diskImage->rootCluster;
     int totalEntries = 0;
 
     while (rootCluster < END_OF_CLUSTER) {
-        unsigned int clusterOffset = ((rootCluster - 2) * clusterSize) + reservedSecOffset + fatOffset;
-        DirEntry *entry = (DirEntry *)(diskMap + clusterOffset);
+        unsigned int clusterOffset = ((rootCluster - 2) * diskImage->clusterSize) + diskImage->reservedSecOffset + diskImage->fatOffset;
+        DirEntry *entry = (DirEntry *)(diskImage->diskMap + clusterOffset);
         int validEntryCount = 0;
 
-        for (int i = 0; i < entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY; i++, entry++) {
+        for (int i = 0; i < diskImage->entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY; i++, entry++) {
             if (entry->DIR_Name[0] == DELETED_FILE || entry->DIR_Attr == ATTR_LONG_NAME) {
                 continue;
             }
@@ -258,15 +268,12 @@ void listRootDirectory(DiskImage *diskImage) {
                 }
             }
 
-            if (formattedName != NULL) {
-                free(formattedName);
-            }
-
+            free(formattedName);
             validEntryCount++;
         }
 
         totalEntries+=validEntryCount;
-        rootCluster = FAT[rootCluster];
+        rootCluster = diskImage->FAT[rootCluster];
     }
     
     printf("Total number of entries = %d\n", totalEntries);
@@ -302,36 +309,57 @@ char *formatDirEntryName(unsigned char* dirName, bool overrideFirstChar, char fi
 }
 
 void recoverFile(DiskImage *diskImage, char *filename) {
-    BootEntry *bootEntry = diskImage->bootEntry;
-    unsigned int rootCluster = bootEntry->BPB_RootClus;
-    unsigned int clusterSize = bootEntry->BPB_SecPerClus * bootEntry->BPB_BytsPerSec;
-    unsigned int reservedSecOffset = bootEntry->BPB_RsvdSecCnt * bootEntry->BPB_BytsPerSec;
-    unsigned int fatOffset = (bootEntry->BPB_NumFATs * bootEntry->BPB_FATSz32) * bootEntry->BPB_BytsPerSec;
-    unsigned int *FAT = (unsigned int *)(diskImage->map + reservedSecOffset);
-    int entriesPerCluster = (int)(clusterSize / sizeof(DirEntry));
-    unsigned int clusterOffset = ((rootCluster - 2) * clusterSize) + reservedSecOffset + fatOffset;
-    DirEntry *entry = (DirEntry *)(diskImage->map + clusterOffset);
+    unsigned int rootCluster = diskImage->rootCluster;
 
-    for (int i = 0; i < entriesPerCluster; i++, entry++) {
-        if (entry->DIR_Name[0] == DELETED_FILE) {
-            if (isDeletedFile(entry->DIR_Name, filename) == true) {
-                entry->DIR_Name[0] = filename[0];
-                unsigned int startCluster = ((unsigned int)entry->DIR_FstClusHI << 16) | entry->DIR_FstClusLO;
-                FAT[startCluster] = END_OF_CLUSTER;
-                printf("%s: successfully recovered\n", filename);
-                return;
+    int matchingDeletedFileCount = 0;
+    DirEntry *matchingDeletedEntry = NULL;
+
+    while (rootCluster < END_OF_CLUSTER) {
+        unsigned int clusterOffset = ((rootCluster - 2) * diskImage->clusterSize) + diskImage->reservedSecOffset + diskImage->fatOffset;
+        DirEntry *entry = (DirEntry *)(diskImage->diskMap + clusterOffset);
+
+        for (int i = 0; i < diskImage->entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY; i++, entry++) {
+            if (entry->DIR_Attr == ATTR_LONG_NAME || entry->DIR_Attr == ATTR_DIRECTORY){
+                continue;
+            }
+
+            if (entry->DIR_Name[0] == DELETED_FILE) {
+                if (isMatchingDeletedFile(entry->DIR_Name, filename)) {
+                    matchingDeletedFileCount++;
+                    matchingDeletedEntry = entry;
+                }
             }
         }
+        rootCluster = diskImage->FAT[rootCluster];
     }
-    printf("%s: file not found\n", filename);
+
+    if (matchingDeletedFileCount == 1) {
+        unsigned int startingCluster = ((unsigned int)matchingDeletedEntry->DIR_FstClusHI << 16) | matchingDeletedEntry->DIR_FstClusLO;
+        int clustersToUpdate = (matchingDeletedEntry->DIR_FileSize + diskImage->clusterSize - 1) / diskImage->clusterSize;
+
+        matchingDeletedEntry->DIR_Name[0] = filename[0];
+        for (int i = 0; i < clustersToUpdate - 1; i++) {
+            diskImage->FAT[startingCluster] = startingCluster + 1;
+            startingCluster++;
+        }
+        diskImage->FAT[startingCluster] = END_OF_CLUSTER;
+        
+        printf("%s: successfully recovered\n", filename);
+    } else if (matchingDeletedFileCount > 1) {
+        printf("%s: multiple candidates found\n", filename);
+    } else {
+        printf("%s: file not found\n", filename);
+    }
 }
 
-bool isDeletedFile(unsigned char* entryName, char* filename) {
+bool isMatchingDeletedFile(unsigned char* entryName, char* filename) {
     char* recoveredName = formatDirEntryName(entryName, true, filename[0]);
+
     if (strcmp(recoveredName, filename) == 0) {
         free(recoveredName);
         return true;
     }
+
     free(recoveredName);
     return false;
 }
