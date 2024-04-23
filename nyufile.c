@@ -507,20 +507,19 @@ bool findDeletedFileClusters(DiskImage *diskImage, unsigned int fileSize, unsign
     return false;
 }
 
-bool checkSHA1MatchNonContiguousFile(DiskImage *diskImage, unsigned int *fileClusters, int fileClusterCount, unsigned int fileSize, char *expectedSHA1) {
-    SHA_CTX ctx;
-    SHA1_Init(&ctx);
-
+bool checkSHA1MatchNonContiguousFile(DiskImage *diskImage, unsigned int *clusters, int numClusters, unsigned int fileSize, char *expectedSHA1) {
+    char *data = malloc(fileSize * sizeof(char));
     unsigned int bytesRead = 0;
-    for (int i = 0; i < fileClusterCount; i++) {
-        unsigned int clusterOffset = (fileClusters[i] - 2) * diskImage->clusterSize + diskImage->reservedSecOffset + diskImage->fatOffset;
+    
+    for (int i = 0; i < numClusters; i++) {
+        unsigned int clusterOffset = (clusters[i] - 2) * diskImage->clusterSize + diskImage->reservedSecOffset + diskImage->fatOffset;
         unsigned int bytesToRead = diskImage->clusterSize;
 
         if (bytesRead + bytesToRead > fileSize) {
             bytesToRead = fileSize - bytesRead;
         }
 
-        SHA1_Update(&ctx, diskImage->diskMap + clusterOffset, bytesToRead);
+        memcpy(data + bytesRead, diskImage->diskMap + clusterOffset, bytesToRead);
         bytesRead += bytesToRead;
 
         if (bytesRead >= fileSize) {
@@ -529,14 +528,16 @@ bool checkSHA1MatchNonContiguousFile(DiskImage *diskImage, unsigned int *fileClu
     }
 
     unsigned char shaDigest[SHA_DIGEST_LENGTH];
-    SHA1_Final(shaDigest, &ctx);
+    SHA1((unsigned char *)data, fileSize, shaDigest);
 
     char calculatedSHA1[SHA_DIGEST_LENGTH * 2 + 1];
     for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
         sprintf(calculatedSHA1 + i * 2, "%02x", shaDigest[i]);
     }
 
-    return strncmp(calculatedSHA1, expectedSHA1, SHA_DIGEST_LENGTH * 2) == 0;
+    bool result = strncmp(calculatedSHA1, expectedSHA1, SHA_DIGEST_LENGTH * 2) == 0;
+    free(data);
+    return result;
 }
 
 /* References:
