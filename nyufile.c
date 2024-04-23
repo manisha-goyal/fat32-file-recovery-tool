@@ -84,8 +84,8 @@ void unmapDiskImage(DiskImage *diskImage);
 void printUsage();
 void printFileSystemInfo(DiskImage *diskImage);
 void listRootDirectory(DiskImage *diskImage);
-char *formatDirEntryName(unsigned char *dirName, bool overrideFirstChar, char firstChar);
 void recoverFile(DiskImage *diskImage, char *filename);
+char *formatDirEntryName(unsigned char *dirName, bool overrideFirstChar, char firstChar);
 bool isMatchingDeletedFile(unsigned char* entryName, char* filename);
 
 int main(int argc, char *argv[]) {
@@ -279,35 +279,6 @@ void listRootDirectory(DiskImage *diskImage) {
     printf("Total number of entries = %d\n", totalEntries);
 }
 
-char *formatDirEntryName(unsigned char* dirName, bool overrideFirstChar, char firstChar) {
-    char* formattedName = malloc(13 * sizeof(char));
-    int len = 0;
-    formattedName[len++] = overrideFirstChar ? firstChar : dirName[0];
-    int pos = 1;
-
-    while (pos < 8 && dirName[pos] != ' ') {
-        formattedName[len++] = dirName[pos++];
-    }
-
-    bool hasExtension = false;
-    for (pos = 8; pos < 11; pos++) {
-        if (dirName[pos] != ' ') {
-            hasExtension = true;
-            break;
-        }
-    }
-
-    if (hasExtension) {
-        formattedName[len++] = '.';
-        for (pos = 8; pos < 11 && dirName[pos] != ' '; pos++) {
-            formattedName[len++] = dirName[pos];
-        }
-    }
-
-    formattedName[len] = '\0';
-    return formattedName;
-}
-
 void recoverFile(DiskImage *diskImage, char *filename) {
     unsigned int rootCluster = diskImage->rootCluster;
 
@@ -350,6 +321,35 @@ void recoverFile(DiskImage *diskImage, char *filename) {
     } else {
         printf("%s: file not found\n", filename);
     }
+}
+
+char *formatDirEntryName(unsigned char* dirName, bool overrideFirstChar, char firstChar) {
+    char* formattedName = malloc(13 * sizeof(char));
+    int len = 0;
+    formattedName[len++] = overrideFirstChar ? firstChar : dirName[0];
+    int pos = 1;
+
+    while (pos < 8 && dirName[pos] != ' ') {
+        formattedName[len++] = dirName[pos++];
+    }
+
+    bool hasExtension = false;
+    for (pos = 8; pos < 11; pos++) {
+        if (dirName[pos] != ' ') {
+            hasExtension = true;
+            break;
+        }
+    }
+
+    if (hasExtension) {
+        formattedName[len++] = '.';
+        for (pos = 8; pos < 11 && dirName[pos] != ' '; pos++) {
+            formattedName[len++] = dirName[pos];
+        }
+    }
+
+    formattedName[len] = '\0';
+    return formattedName;
 }
 
 bool isMatchingDeletedFile(unsigned char* entryName, char* filename) {
