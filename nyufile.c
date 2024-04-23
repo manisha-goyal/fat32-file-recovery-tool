@@ -80,19 +80,30 @@ typedef struct DiskImage {
 
 #define EMPTY_FILE_SHA1 "da39a3ee5e6b4b0d3255bfef95601890afd80709"
 
+#define MAX_CLUSTERS 20
+#define MAX_FILE_CLUSTERS 5
+
 void handleError(char* message, int exitCode);
 void initDiskImage(DiskImage *diskImage, char *filename);
 void mapDiskImage(DiskImage *diskImage);
 void setupDiskContext(DiskImage *diskImage);
 void unmapDiskImage(DiskImage *diskImage);
+
 void printUsage();
 void printFileSystemInfo(DiskImage *diskImage);
 void listRootDirectory(DiskImage *diskImage);
-void recoverFile(DiskImage *diskImage, char *filename, int sFlag, char *sha1);
+
+unsigned int getStartingCluster(DirEntry *entry);
 char *formatDirEntryName(unsigned char *dirName, bool overrideFirstChar, char firstChar);
 bool isMatchingDeletedFile(unsigned char* entryName, char* filename);
-bool isSHA1Match(DiskImage *diskImage, DirEntry *entry, const char *expectedSHA1);
-unsigned int getStartingCluster(DirEntry *entry);
+
+bool checkSHA1MatchContiguousFile(DiskImage *diskImage, DirEntry *entry, const char *expectedSHA1);
+void recoverContiguousFile(DiskImage *diskImage, char *filename, int sFlag, char *sha1);
+
+bool isMatchingDeletedFileClusters(DiskImage *diskImage, DirEntry *entry, char *sha1, unsigned int *fileClusters);
+bool findDeletedFileClusters(DiskImage *diskImage, unsigned int fileSize, unsigned int *unallocatedClusters, int unallocatedClusterCount, unsigned int *fileClusters, int fileClusterCount, char *sha1);
+bool checkSHA1MatchNonContiguousFile(DiskImage *diskImage, unsigned int *fileClusters, int fileClusterCount, unsigned int fileSize, char *sha1);
+void recoverNonContiguousFile(DiskImage *diskImage, char *filename, char *sha1);
 
 int main(int argc, char *argv[]) {
     int opt;
@@ -163,7 +174,10 @@ int main(int argc, char *argv[]) {
         listRootDirectory(&diskImage);
     }
     if(rFlag) {
-        recoverFile(&diskImage, filename, sFlag, sha1);
+        recoverContiguousFile(&diskImage, filename, sFlag, sha1);
+    }
+    if(RFlag) {
+        recoverNonContiguousFile(&diskImage, filename, sha1);
     }
     
     unmapDiskImage(&diskImage);
@@ -283,18 +297,18 @@ void listRootDirectory(DiskImage *diskImage) {
     printf("Total number of entries = %d\n", totalEntries);
 }
 
-void recoverFile(DiskImage *diskImage, char *filename, int sFlag, char *sha1) {
+void recoverContiguousFile(DiskImage *diskImage, char *filename, int sFlag, char *sha1) {
     unsigned int rootCluster = diskImage->rootCluster;
 
     int matchingDeletedFileCount = 0;
-    bool hasMatchingSHA1 = false;
+    bool foundMatchingSHA1 = false;
     DirEntry *matchingDeletedEntry = NULL;
 
-    while (rootCluster < END_OF_CLUSTER && !hasMatchingSHA1) {
+    while (rootCluster < END_OF_CLUSTER && !foundMatchingSHA1) {
         unsigned int clusterOffset = ((rootCluster - 2) * diskImage->clusterSize) + diskImage->reservedSecOffset + diskImage->fatOffset;
         DirEntry *entry = (DirEntry *)(diskImage->diskMap + clusterOffset);
 
-        for (int i = 0; i < diskImage->entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY && !hasMatchingSHA1; i++, entry++) {
+        for (int i = 0; i < diskImage->entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY && !foundMatchingSHA1; i++, entry++) {
             if (entry->DIR_Attr == ATTR_LONG_NAME || entry->DIR_Attr == ATTR_DIRECTORY){
                 continue;
             }
@@ -302,8 +316,8 @@ void recoverFile(DiskImage *diskImage, char *filename, int sFlag, char *sha1) {
             if (entry->DIR_Name[0] == DELETED_FILE) {
                 if (isMatchingDeletedFile(entry->DIR_Name, filename)) {
                     if(sFlag) {
-                        if (isSHA1Match(diskImage, entry, sha1)) {
-                            hasMatchingSHA1 = true;
+                        if (checkSHA1MatchContiguousFile(diskImage, entry, sha1)) {
+                            foundMatchingSHA1 = true;
                             matchingDeletedFileCount++;
                             matchingDeletedEntry = entry;
                         }
@@ -327,13 +341,58 @@ void recoverFile(DiskImage *diskImage, char *filename, int sFlag, char *sha1) {
             startingCluster++;
         }
         diskImage->FAT[startingCluster] = END_OF_CLUSTER;
-        if(hasMatchingSHA1) {
+
+        if(foundMatchingSHA1) {
             printf("%s: successfully recovered with SHA-1\n", filename);
         } else {
             printf("%s: successfully recovered\n", filename);
         }
     } else if (matchingDeletedFileCount > 1) {
         printf("%s: multiple candidates found\n", filename);
+    } else {
+        printf("%s: file not found\n", filename);
+    }
+}
+
+void recoverNonContiguousFile(DiskImage *diskImage, char *filename, char *sha1) {
+    unsigned int rootCluster = diskImage->rootCluster;
+
+    bool foundMatchingSHA1 = false;
+    DirEntry *matchingDeletedEntry = NULL;
+    unsigned int deletedFileClusters[MAX_FILE_CLUSTERS];
+
+    while (rootCluster < END_OF_CLUSTER && !foundMatchingSHA1) {
+        unsigned int clusterOffset = ((rootCluster - 2) * diskImage->clusterSize) + diskImage->reservedSecOffset + diskImage->fatOffset;
+        DirEntry *entry = (DirEntry *)(diskImage->diskMap + clusterOffset);
+
+        for (int i = 0; i < diskImage->entriesPerCluster && entry->DIR_Name[0] != END_OF_DIRECTORY && entry->DIR_Attr != EMPTY_DIRECTORY && !foundMatchingSHA1; i++, entry++) {
+            if (entry->DIR_Attr == ATTR_LONG_NAME || entry->DIR_Attr == ATTR_DIRECTORY){
+                continue;
+            }
+
+            if (entry->DIR_Name[0] == DELETED_FILE) {
+                if (isMatchingDeletedFile(entry->DIR_Name, filename)) {
+                    memset(deletedFileClusters, 0, sizeof(deletedFileClusters));
+                    if(isMatchingDeletedFileClusters(diskImage, entry, sha1, deletedFileClusters)) {
+                        foundMatchingSHA1 = true;
+                        matchingDeletedEntry = entry;
+                    }
+                }
+            }
+        }
+        rootCluster = diskImage->FAT[rootCluster];
+    }
+
+    if (foundMatchingSHA1) {
+        matchingDeletedEntry->DIR_Name[0] = filename[0];
+
+        int i = 0;
+        for (i = 0; i < MAX_FILE_CLUSTERS - 1 && deletedFileClusters[i] != 0; i++) {
+            diskImage->FAT[deletedFileClusters[i]] = deletedFileClusters[i + 1];
+        }
+        diskImage->FAT[deletedFileClusters[i-1]] = END_OF_CLUSTER;
+
+        printf("%s: successfully recovered with SHA-1\n", filename);
     } else {
         printf("%s: file not found\n", filename);
     }
@@ -384,7 +443,7 @@ bool isMatchingDeletedFile(unsigned char* entryName, char* filename) {
     return false;
 }
 
-bool isSHA1Match(DiskImage *diskImage, DirEntry *entry, const char *expectedSHA1) {
+bool checkSHA1MatchContiguousFile(DiskImage *diskImage, DirEntry *entry, const char *expectedSHA1) {
     if (entry->DIR_FileSize == 0) {
         return strncmp(EMPTY_FILE_SHA1, expectedSHA1, SHA_DIGEST_LENGTH * 2) == 0;
     }
@@ -396,6 +455,82 @@ bool isSHA1Match(DiskImage *diskImage, DirEntry *entry, const char *expectedSHA1
     char calculatedSHA1[SHA_DIGEST_LENGTH * 2 + 1];
     SHA1((unsigned char *)fileData, entry->DIR_FileSize, shaDigest);
 
+    for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
+        sprintf(calculatedSHA1 + i * 2, "%02x", shaDigest[i]);
+    }
+
+    return strncmp(calculatedSHA1, expectedSHA1, SHA_DIGEST_LENGTH * 2) == 0;
+}
+
+bool isMatchingDeletedFileClusters(DiskImage *diskImage, DirEntry *entry, char *expectedSHA1, unsigned int *fileClusters) {
+    fileClusters[0] = getStartingCluster(entry);
+
+    if(entry->DIR_FileSize == 0) {
+        return strncmp(EMPTY_FILE_SHA1, expectedSHA1, SHA_DIGEST_LENGTH * 2) == 0;
+    }
+
+    unsigned int unallocatedClusters[MAX_CLUSTERS];
+    int unallocatedClusterCount = 0;
+    for (unsigned int cluster = diskImage->rootCluster; unallocatedClusterCount <= (int)(MAX_CLUSTERS + diskImage->rootCluster); cluster++) {
+        if (diskImage->FAT[cluster] == 0) {
+            unallocatedClusters[unallocatedClusterCount++] = cluster;
+        }
+    }
+
+    return findDeletedFileClusters(diskImage, entry->DIR_FileSize, unallocatedClusters, unallocatedClusterCount, fileClusters, 1, expectedSHA1);
+}
+
+bool findDeletedFileClusters(DiskImage *diskImage, unsigned int fileSize, unsigned int *unallocatedClusters, int unallocatedClusterCount, unsigned int *fileClusters, int fileClusterCount, char *expectedSHA1) {
+    if (fileSize <= diskImage->clusterSize * fileClusterCount) {
+        if (checkSHA1MatchNonContiguousFile(diskImage, fileClusters, fileClusterCount, fileSize, expectedSHA1)) {
+            return true;
+        }
+    } else {
+        for (int i = 0; i < unallocatedClusterCount; i++) {
+            bool contains = false;
+            for (int j = 0; j < fileClusterCount && !contains; j++) {
+                if (fileClusters[j] == unallocatedClusters[i]) {
+                    contains = true;
+                }
+            }
+            if (!contains) {
+                fileClusters[fileClusterCount] = unallocatedClusters[i];
+                if (findDeletedFileClusters(diskImage, fileSize, unallocatedClusters, unallocatedClusterCount, fileClusters, fileClusterCount + 1, expectedSHA1)) {
+                    return true;
+                }
+                fileClusters[fileClusterCount] = 0;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool checkSHA1MatchNonContiguousFile(DiskImage *diskImage, unsigned int *fileClusters, int fileClusterCount, unsigned int fileSize, char *expectedSHA1) {
+    SHA_CTX ctx;
+    SHA1_Init(&ctx);
+
+    unsigned int bytesRead = 0;
+    for (int i = 0; i < fileClusterCount; i++) {
+        unsigned int clusterOffset = (fileClusters[i] - 2) * diskImage->clusterSize + diskImage->reservedSecOffset + diskImage->fatOffset;
+        unsigned int bytesToRead = diskImage->clusterSize;
+
+        if (bytesRead + bytesToRead > fileSize) {
+            bytesToRead = fileSize - bytesRead;
+        }
+
+        SHA1_Update(&ctx, diskImage->diskMap + clusterOffset, bytesToRead);
+        bytesRead += bytesToRead;
+
+        if (bytesRead >= fileSize) {
+            break;
+        }
+    }
+
+    unsigned char shaDigest[SHA_DIGEST_LENGTH];
+    SHA1_Final(shaDigest, &ctx);
+
+    char calculatedSHA1[SHA_DIGEST_LENGTH * 2 + 1];
     for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
         sprintf(calculatedSHA1 + i * 2, "%02x", shaDigest[i]);
     }
