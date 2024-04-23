@@ -463,7 +463,8 @@ bool checkSHA1MatchContiguousFile(DiskImage *diskImage, DirEntry *entry, const c
 }
 
 bool isMatchingDeletedFileClusters(DiskImage *diskImage, DirEntry *entry, char *expectedSHA1, unsigned int *fileClusters) {
-    fileClusters[0] = getStartingCluster(entry);
+    unsigned int startingCluster = getStartingCluster(entry);
+    fileClusters[0] = startingCluster;
 
     if(entry->DIR_FileSize == 0) {
         return strncmp(EMPTY_FILE_SHA1, expectedSHA1, SHA_DIGEST_LENGTH * 2) == 0;
