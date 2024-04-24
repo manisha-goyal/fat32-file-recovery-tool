@@ -365,11 +365,11 @@ void recoverNonContiguousFile(DiskImage *diskImage, char *filename, char *sha1) 
     if (foundMatchingSHA1) {
         matchingDeletedEntry->DIR_Name[0] = filename[0];
 
-        int i = 0;
-        for (i = 0; i < MAX_FILE_CLUSTERS - 1 && deletedFileClusters[i] != 0; i++) {
+        int numClusters = (matchingDeletedEntry->DIR_FileSize + diskImage->clusterSize - 1) / diskImage->clusterSize;
+        for (int i = 0; i < numClusters - 1; i++) {
             diskImage->FAT[deletedFileClusters[i]] = deletedFileClusters[i + 1];
         }
-        diskImage->FAT[deletedFileClusters[i-1]] = END_OF_CLUSTER;
+        diskImage->FAT[deletedFileClusters[numClusters - 1]] = END_OF_CLUSTER;
 
         printf("%s: successfully recovered with SHA-1\n", filename);
     } else {
