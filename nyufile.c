@@ -84,26 +84,24 @@ typedef struct DiskImage {
 #define MAX_FILE_CLUSTERS 5
 
 void handleError(char* message, int exitCode);
-void initDiskImage(DiskImage *diskImage, char *filename);
-void mapDiskImage(DiskImage *diskImage);
-void setupDiskContext(DiskImage *diskImage);
+void mapDiskImage(DiskImage *diskImage, char *filename);
 void unmapDiskImage(DiskImage *diskImage);
 
 void printUsage();
 void printFileSystemInfo(DiskImage *diskImage);
 void listRootDirectory(DiskImage *diskImage);
+void recoverContiguousFile(DiskImage *diskImage, char *filename, int sFlag, char *sha1);
+void recoverNonContiguousFile(DiskImage *diskImage, char *filename, char *sha1);
 
 unsigned int getStartingCluster(DirEntry *entry);
 char *formatDirEntryName(unsigned char *dirName, bool overrideFirstChar, char firstChar);
 bool isMatchingDeletedFile(unsigned char* entryName, char* filename);
 
 bool checkSHA1MatchContiguousFile(DiskImage *diskImage, DirEntry *entry, const char *expectedSHA1);
-void recoverContiguousFile(DiskImage *diskImage, char *filename, int sFlag, char *sha1);
 
 bool isMatchingDeletedFileClusters(DiskImage *diskImage, DirEntry *entry, char *sha1, unsigned int *fileClusters);
 bool findDeletedFileClusters(DiskImage *diskImage, unsigned int fileSize, unsigned int *unallocatedClusters, int unallocatedClusterCount, unsigned int *fileClusters, int fileClusterCount, char *sha1);
 bool checkSHA1MatchNonContiguousFile(DiskImage *diskImage, unsigned int *fileClusters, int fileClusterCount, unsigned int fileSize, char *sha1);
-void recoverNonContiguousFile(DiskImage *diskImage, char *filename, char *sha1);
 
 int main(int argc, char *argv[]) {
     int opt;
@@ -144,44 +142,36 @@ int main(int argc, char *argv[]) {
         printUsage();
     }
 
-    if (iFlag || lFlag) {
+    char *diskImageName = argv[optind];
+
+    DiskImage diskImage;
+    mapDiskImage(&diskImage, diskImageName);
+
+    if (iFlag) {
         if (argc != 3) {
             printUsage();
         }
+        printFileSystemInfo(&diskImage);
+    } else if (lFlag) {
+        if (argc != 3) {
+            printUsage();
+        }
+        listRootDirectory(&diskImage);
     } else if (rFlag) {
         if ((filename == NULL || strlen(filename) < 1) || (sFlag && (sha1 == NULL || strlen(sha1) == 0))) {
             printUsage();
         }
+        recoverContiguousFile(&diskImage, filename, sFlag, sha1);
     } else if (RFlag) {
         if (filename == NULL || strlen(filename) < 1 || !sFlag || sha1 == NULL || strlen(sha1) == 0) {
             printUsage();
         }
+        recoverNonContiguousFile(&diskImage, filename, sha1);
     } else {
         printUsage();
     }
 
-    char *diskImageName = argv[optind];
-
-    DiskImage diskImage;
-    initDiskImage(&diskImage, diskImageName);
-    mapDiskImage(&diskImage);
-    setupDiskContext(&diskImage);
-
-    if(iFlag) {
-        printFileSystemInfo(&diskImage);
-    }
-    if (lFlag) {
-        listRootDirectory(&diskImage);
-    }
-    if(rFlag) {
-        recoverContiguousFile(&diskImage, filename, sFlag, sha1);
-    }
-    if(RFlag) {
-        recoverNonContiguousFile(&diskImage, filename, sha1);
-    }
-    
     unmapDiskImage(&diskImage);
-
     return 0;
 }
 
@@ -192,13 +182,9 @@ void handleError(char* message, int exitCode) {
     }
 }
 
-void initDiskImage(DiskImage *diskImage, char *filename) {
+void mapDiskImage(DiskImage *diskImage, char *filename) {
     diskImage->filename = filename;
-    diskImage->diskMap = MAP_FAILED;
-    diskImage->size = 0;
-}
 
-void mapDiskImage(DiskImage *diskImage) {
     int fd = open(diskImage->filename, O_RDWR);
     if (fd == -1) {
         handleError("Error opening disk image", EXIT_FAILURE);
@@ -216,13 +202,6 @@ void mapDiskImage(DiskImage *diskImage) {
 
     if (diskImage->diskMap == MAP_FAILED) {
         handleError("Error mapping disk image", EXIT_FAILURE);
-    }
-}
-
-void setupDiskContext(DiskImage *diskImage) {
-    if (diskImage->diskMap == MAP_FAILED) {
-        fprintf(stderr, "Disk map is not initialized.\n");
-        return;
     }
 
     diskImage->bootEntry = (BootEntry *)diskImage->diskMap;
@@ -510,9 +489,9 @@ bool findDeletedFileClusters(DiskImage *diskImage, unsigned int fileSize, unsign
 bool checkSHA1MatchNonContiguousFile(DiskImage *diskImage, unsigned int *clusters, int numClusters, unsigned int fileSize, char *expectedSHA1) {
     char *data = malloc(fileSize * sizeof(char));
     unsigned int bytesRead = 0;
-    
+
     for (int i = 0; i < numClusters; i++) {
-        unsigned int clusterOffset = (clusters[i] - 2) * diskImage->clusterSize + diskImage->reservedSecOffset + diskImage->fatOffset;
+        unsigned int clusterOffset = ((clusters[i] - 2) * diskImage->clusterSize) + diskImage->reservedSecOffset + diskImage->fatOffset;
         unsigned int bytesToRead = diskImage->clusterSize;
 
         if (bytesRead + bytesToRead > fileSize) {
@@ -535,9 +514,8 @@ bool checkSHA1MatchNonContiguousFile(DiskImage *diskImage, unsigned int *cluster
         sprintf(calculatedSHA1 + i * 2, "%02x", shaDigest[i]);
     }
 
-    bool result = strncmp(calculatedSHA1, expectedSHA1, SHA_DIGEST_LENGTH * 2) == 0;
     free(data);
-    return result;
+    return strncmp(calculatedSHA1, expectedSHA1, SHA_DIGEST_LENGTH * 2) == 0;
 }
 
 /* References:
