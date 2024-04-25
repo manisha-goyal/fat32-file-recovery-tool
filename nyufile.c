@@ -339,6 +339,7 @@ void recoverNonContiguousFile(DiskImage *diskImage, char *filename, char *sha1) 
     bool foundMatchingSHA1 = false;
     DirEntry *matchingDeletedEntry = NULL;
     unsigned int deletedFileClusters[MAX_FILE_CLUSTERS];
+    memset(deletedFileClusters, 0, MAX_FILE_CLUSTERS * sizeof(unsigned int));
 
     while (rootCluster < END_OF_CLUSTER && !foundMatchingSHA1) {
         unsigned int clusterOffset = ((rootCluster - 2) * diskImage->clusterSize) + diskImage->reservedSecOffset + diskImage->fatOffset;
@@ -351,7 +352,6 @@ void recoverNonContiguousFile(DiskImage *diskImage, char *filename, char *sha1) 
 
             if (entry->DIR_Name[0] == DELETED_FILE) {
                 if (isMatchingDeletedFile(entry->DIR_Name, filename)) {
-                    memset(deletedFileClusters, 0, sizeof(deletedFileClusters));
                     if(isMatchingDeletedFileClusters(diskImage, entry, sha1, deletedFileClusters)) {
                         foundMatchingSHA1 = true;
                         matchingDeletedEntry = entry;
@@ -444,6 +444,7 @@ bool checkSHA1MatchContiguousFile(DiskImage *diskImage, DirEntry *entry, const c
 }
 
 bool isMatchingDeletedFileClusters(DiskImage *diskImage, DirEntry *entry, char *expectedSHA1, unsigned int *fileClusters) {
+    memset(fileClusters, 0, MAX_FILE_CLUSTERS * sizeof(unsigned int));
     unsigned int startingCluster = getStartingCluster(entry);
     fileClusters[0] = startingCluster;
 
@@ -453,12 +454,12 @@ bool isMatchingDeletedFileClusters(DiskImage *diskImage, DirEntry *entry, char *
 
     unsigned int unallocatedClusters[MAX_CLUSTERS];
     int unallocatedClusterCount = 0;
-    for (unsigned int cluster = diskImage->rootCluster; unallocatedClusterCount <= (int)(MAX_CLUSTERS + diskImage->rootCluster); cluster++) {
-        if (diskImage->FAT[cluster] == 0) {
-            unallocatedClusters[unallocatedClusterCount++] = cluster;
+    for (int i = diskImage->rootCluster; i <= (int)(MAX_CLUSTERS + diskImage->rootCluster); i++) {
+        if (diskImage->FAT[i] == 0) {
+            unallocatedClusters[unallocatedClusterCount++] = i;
         }
     }
-
+    
     return findDeletedFileClusters(diskImage, entry->DIR_FileSize, unallocatedClusters, unallocatedClusterCount, fileClusters, 1, expectedSHA1);
 }
 
