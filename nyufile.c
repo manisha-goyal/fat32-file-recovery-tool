@@ -378,8 +378,8 @@ void recoverNonContiguousFile(DiskImage *diskImage, char *filename, char *sha1) 
         
         for(int i = 0; i < diskImage->fatCount; i++) {
             unsigned int *FAT = (unsigned int *)(diskImage->diskMap + diskImage->reservedSecOffset + (i * diskImage->fatSize));
-            for (int i = 0; i < numClusters - 1; i++) {
-                FAT[deletedFileClusters[i]] = deletedFileClusters[i + 1];
+            for (int j = 0; j < numClusters - 1; j++) {
+                FAT[deletedFileClusters[j]] = deletedFileClusters[j + 1];
             }
             FAT[deletedFileClusters[numClusters - 1]] = END_OF_CLUSTER;
         }
