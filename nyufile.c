@@ -66,6 +66,8 @@ typedef struct DiskImage {
     unsigned int clusterSize;
     unsigned int reservedSecOffset;
     unsigned int fatOffset;
+    int fatCount;
+    unsigned int fatSize;
     unsigned int *FAT;
     int entriesPerCluster;
 } DiskImage;
@@ -210,6 +212,8 @@ void mapDiskImage(DiskImage *diskImage, char *filename) {
     diskImage->reservedSecOffset = diskImage->bootEntry->BPB_RsvdSecCnt * diskImage->bootEntry->BPB_BytsPerSec;
     diskImage->fatOffset = (diskImage->bootEntry->BPB_NumFATs * diskImage->bootEntry->BPB_FATSz32) * diskImage->bootEntry->BPB_BytsPerSec;
     diskImage->FAT = (unsigned int *)(diskImage->diskMap + diskImage->reservedSecOffset);
+    diskImage->fatCount = diskImage->bootEntry->BPB_NumFATs;
+    diskImage->fatSize = diskImage->bootEntry->BPB_FATSz32 * diskImage->bootEntry->BPB_BytsPerSec;
     diskImage->entriesPerCluster = (int)(diskImage->clusterSize / sizeof(DirEntry));
 }
 
@@ -315,11 +319,16 @@ void recoverContiguousFile(DiskImage *diskImage, char *filename, int sFlag, char
         int clustersToUpdate = (matchingDeletedEntry->DIR_FileSize + diskImage->clusterSize - 1) / diskImage->clusterSize;
 
         matchingDeletedEntry->DIR_Name[0] = filename[0];
-        for (int i = 0; i < clustersToUpdate - 1; i++) {
-            diskImage->FAT[startingCluster] = startingCluster + 1;
-            startingCluster++;
+
+        for(int i = 0; i < diskImage->fatCount; i++) {
+            unsigned int *FAT = (unsigned int *)(diskImage->diskMap + diskImage->reservedSecOffset + (i * diskImage->fatSize));
+            unsigned int cluster = startingCluster;
+            for (int j = 0; j < clustersToUpdate - 1; j++) {
+                FAT[cluster] = cluster + 1;
+                cluster++;
+            }
+            FAT[cluster] = END_OF_CLUSTER;
         }
-        diskImage->FAT[startingCluster] = END_OF_CLUSTER;
 
         if(foundMatchingSHA1) {
             printf("%s: successfully recovered with SHA-1\n", filename);
